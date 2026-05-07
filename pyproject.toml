@@ -18,6 +18,10 @@ dependencies = [
     "pyyaml>=6.0",
     "cffi>=1.17",
     "python-ulid>=3.0",
+    # xdelta3 must be built from samuelcolvin/xdelta3-python with the jmacd
+    # release3_1_apl C sources, PR #14 Python 3.10 fix, assert.h include, and
+    # -std=gnu11 compile flag.  The PyPI package (0.0.5) is not compatible.
+    "xdelta3>=0.0.5",
 ]
 
 [project.optional-dependencies]
