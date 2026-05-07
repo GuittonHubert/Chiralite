@@ -1,7 +1,6 @@
 """Tests for protocol/framing.py and protocol/state_machine.py."""
 from __future__ import annotations
 
-import asyncio
 import os
 
 import pytest
@@ -26,36 +25,7 @@ from chiralite.protocol.state_machine import (
     SessionState,
     SessionStateMachine,
 )
-from chiralite.transport.websocket import Connection
-
-# ---------------------------------------------------------------------------
-# Fake in-process Connection backed by asyncio queues
-# ---------------------------------------------------------------------------
-
-def _pipe() -> tuple[FramedConnection, FramedConnection]:
-    """Return two FramedConnections connected by in-memory queues."""
-    q_ab: asyncio.Queue[bytes] = asyncio.Queue()
-    q_ba: asyncio.Queue[bytes] = asyncio.Queue()
-
-    class _FakeWS:
-        def __init__(self, send_q: asyncio.Queue[bytes], recv_q: asyncio.Queue[bytes]) -> None:
-            self._sq = send_q
-            self._rq = recv_q
-
-        async def send(self, data: bytes) -> None:
-            await self._sq.put(data)
-
-        async def recv(self) -> bytes:
-            return await self._rq.get()
-
-        async def close(self) -> None:
-            pass
-
-        remote_address = ("127.0.0.1", 9999)
-
-    conn_a = Connection(_FakeWS(q_ab, q_ba), remote_addr="127.0.0.1:9999")  # type: ignore[arg-type]
-    conn_b = Connection(_FakeWS(q_ba, q_ab), remote_addr="127.0.0.1:9999")  # type: ignore[arg-type]
-    return FramedConnection(conn_a), FramedConnection(conn_b)
+from conftest import make_pipe as _pipe
 
 
 def _codec_pair(
