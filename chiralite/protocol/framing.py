@@ -1,30 +1,40 @@
-"""Binary frame codec for one chiralite WebSocket session.
+"""Binary frame codec for one chiralite session.
 
 Two modes:
 
 Plain mode (handshake phase)
     ``send_plain`` / ``recv_plain`` transmit Pydantic messages as raw JSON
-    bytes inside a binary WebSocket frame, with no encryption.  Used for
-    HELLO → CHALLENGE → RESPONSE → ACCEPT / AUTH_ERROR.
+    bytes, with no encryption.  Used for HELLO → CHALLENGE → RESPONSE →
+    ACCEPT / AUTH_ERROR.
 
 Encrypted mode (session phase)
     ``send`` / ``recv`` transmit Pydantic messages as AES-256-GCM encrypted
-    frames (seq + nonce + ciphertext) via ``PayloadCodec``.  Activated by
-    calling ``activate(codec)`` after the handshake completes.
+    frames via a codec activated by ``activate()``.  The codec can be either
+    ``PayloadCodec`` (WebSocket, seq-based) or ``HttpPayloadCodec`` (HTTP,
+    random nonce); both satisfy the ``_CodecProtocol`` duck type.
 """
 from __future__ import annotations
 
+from typing import Protocol
+
 from pydantic import BaseModel
 
-from chiralite.crypto.payload import FrameError, PayloadCodec, ReplayError
+from chiralite.crypto.payload import FrameError, ReplayError
 from chiralite.protocol.messages import AnyMsg, parse_json
-from chiralite.transport.websocket import Connection
+from chiralite.transport import IConnection
 
 __all__ = ["FrameError", "FramedConnection", "ReplayError"]
 
 
+class _CodecProtocol(Protocol):
+    """Duck-type interface satisfied by both PayloadCodec and HttpPayloadCodec."""
+
+    def encrypt(self, plaintext: bytes) -> bytes: ...
+    def decrypt(self, frame: bytes) -> bytes: ...
+
+
 class FramedConnection:
-    """Encrypted message channel over a raw WebSocket ``Connection``.
+    """Encrypted message channel over any ``IConnection`` transport.
 
     Typical lifecycle::
 
@@ -36,21 +46,22 @@ class FramedConnection:
 
         # --- session activated ---
         framed.activate(PayloadCodec(session_key, session_token))
+        # or: framed.activate(HttpPayloadCodec(session_key, session_token))
 
         # --- encrypted session ---
         await framed.send(PingMsg(ts_ns=...))
         msg = await framed.recv()
     """
 
-    def __init__(self, conn: Connection) -> None:
+    def __init__(self, conn: IConnection) -> None:
         self._conn = conn
-        self._codec: PayloadCodec | None = None
+        self._codec: _CodecProtocol | None = None
 
     # ------------------------------------------------------------------
     # Codec activation
     # ------------------------------------------------------------------
 
-    def activate(self, codec: PayloadCodec) -> None:
+    def activate(self, codec: _CodecProtocol) -> None:
         """Switch to encrypted mode.  Must be called exactly once, after ACCEPT."""
         if self._codec is not None:
             raise FrameError("codec already activated")
