@@ -13,6 +13,32 @@ import pwd
 from pathlib import Path
 
 
+# ---------------------------------------------------------------------------
+# Mode sanitization
+# ---------------------------------------------------------------------------
+
+FORBIDDEN_BITS = 0o7000   # setuid | setgid | sticky — always stripped
+MAX_FILE_MODE  = 0o644
+MAX_DIR_MODE   = 0o755
+SERVER_UMASK   = 0o022    # applied after ceiling
+
+
+def sanitize_mode(raw: int, *, is_dir: bool) -> int:
+    """Strip dangerous bits and apply the server-side mode ceiling.
+
+    Always removes setuid (04000), setgid (02000), and sticky (01000).
+    Caps at ``MAX_DIR_MODE`` (0o755) for directories and ``MAX_FILE_MODE``
+    (0o644) for files.  Applies ``SERVER_UMASK`` (0o022) last.
+    """
+    mode = raw & ~FORBIDDEN_BITS
+    ceiling = MAX_DIR_MODE if is_dir else MAX_FILE_MODE
+    return mode & ceiling & ~SERVER_UMASK
+
+
+# ---------------------------------------------------------------------------
+# Ownership resolution
+# ---------------------------------------------------------------------------
+
 class UnknownOwnerError(Exception):
     """A uid_name or gid_name could not be resolved on this system."""
 
