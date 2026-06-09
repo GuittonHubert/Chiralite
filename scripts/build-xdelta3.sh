@@ -63,16 +63,8 @@ if [[ -f "$XDELTA_C" ]]; then
     fi
 fi
 
-SETUP_CFG="$BUILD_DIR/setup.cfg"
-if [[ -f "$SETUP_CFG" ]]; then
-    if ! grep -q "std=gnu11" "$SETUP_CFG"; then
-        printf '\n[build_ext]\nextra_compile_args = -std=gnu11\n' >> "$SETUP_CFG"
-        log "  added -std=gnu11 compile flag"
-    fi
-fi
-
 log "Building and installing xdelta3"
-$PIP install --no-build-isolation "$BUILD_DIR"
+CFLAGS="${CFLAGS:+$CFLAGS }-std=gnu11" $PIP install --no-build-isolation "$BUILD_DIR"
 
 log "Verifying install"
 PYTHON="$PYTHON" PIP="$PIP" bash "$0" --check
