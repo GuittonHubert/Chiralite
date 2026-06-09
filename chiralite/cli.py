@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import importlib.metadata
 import json
 import sys
 from pathlib import Path
@@ -38,6 +39,27 @@ app = typer.Typer(
 )
 _audit_app = typer.Typer(help="Audit log commands.")
 app.add_typer(_audit_app, name="audit")
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        version = importlib.metadata.version("chiralite")
+        typer.echo(f"chiralite {version}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _main(
+    version: Optional[bool] = typer.Option(
+        None,
+        "--version",
+        "-V",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show version and exit.",
+    ),
+) -> None:
+    pass
 
 
 # ---------------------------------------------------------------------------

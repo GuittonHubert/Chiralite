@@ -51,11 +51,21 @@ fi
 
 log "Cloning $REPO_URL@$BRANCH into $BUILD_DIR"
 rm -rf "$BUILD_DIR"
-git clone --depth=1 --branch "$BRANCH" "$REPO_URL" "$BUILD_DIR"
+git clone --depth=1 --recurse-submodules --shallow-submodules --branch "$BRANCH" "$REPO_URL" "$BUILD_DIR"
 
-# Patch: add missing assert.h include and force gnu11 for inline compatibility
+# setup.py uses include_dirs=['./xdelta3/lib'], which is populated from the
+# xdelta submodule. The submodule clone above fetches the sources; copy them
+# into xdelta3/lib/ exactly as `make prepare` does in the upstream Makefile.
+log "Preparing xdelta3/lib from xdelta submodule"
+mkdir -p "$BUILD_DIR/xdelta3/lib"
+cp "$BUILD_DIR"/xdelta/xdelta3/xdelta3*.c "$BUILD_DIR/xdelta3/lib/"
+cp "$BUILD_DIR"/xdelta/xdelta3/xdelta3*.h "$BUILD_DIR/xdelta3/lib/"
+rm -f "$BUILD_DIR/xdelta3/lib/"*test.h
+
+# Patch: add missing assert.h include and force gnu11 for inline compatibility.
+# Target xdelta3/lib/xdelta3.c (the copy used by setup.py), not the submodule source.
 log "Applying patches to xdelta3 C sources"
-XDELTA_C="$BUILD_DIR/xdelta3/xdelta3.c"
+XDELTA_C="$BUILD_DIR/xdelta3/lib/xdelta3.c"
 if [[ -f "$XDELTA_C" ]]; then
     if ! grep -q "#include <assert.h>" "$XDELTA_C"; then
         sed -i.bak '1s|^|#include <assert.h>\n|' "$XDELTA_C"
