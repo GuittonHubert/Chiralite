@@ -284,7 +284,7 @@ One JSON object per line (JSONL). UTF-8, append-only.
 
 ### General
 
-- **Python ≥ 3.11** — use `match`, `ExceptionGroup`, `tomllib` where appropriate
+- **Python ≥ 3.10** (3.11+ recommended) — use `match`, `ExceptionGroup`, `tomllib` where available; provide fallbacks for 3.10 where needed
 - **Async-first** — all I/O is `async`/`await`; no blocking calls in the event loop
 - **Fully typed** — every function has type annotations; `mypy --strict` must pass
 - **No bare `except`** — always catch specific exception types

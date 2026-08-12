@@ -43,6 +43,8 @@ from chiralite.silo.registry import RegistryError, SiloRegistry
 from chiralite.silo.session import SiloSession
 from chiralite.sync.index import SiloIndex
 from chiralite.sync.reconciler import server_handle_sync_request
+from chiralite.transport import IConnection
+from chiralite.transport.http_sse import build_http_app
 from chiralite.transport.websocket import Connection, ConnectionLost, WebSocketServer
 from chiralite.trust.policy import (
     ClientPolicy,
@@ -66,9 +68,13 @@ class ServerError(Exception):
 class ChiraliteServer:
     """Asyncio-based chiralite sync server.
 
+    Listens on *port* for WebSocket connections and, optionally, on
+    *http_port* for HTTP SSE connections (fallback for proxy environments
+    that block WebSocket upgrades).
+
     Args:
         host:         Bind address (e.g. ``"0.0.0.0"``).
-        port:         TCP port to listen on.
+        port:         TCP port for WebSocket connections.
         trust_store:  CA used to verify incoming client certificates.
         silo_policy:  Maps (CN, silo_id) → ClientPolicy.
         silo_roots:   Maps silo_id → absolute jail root path.
@@ -76,6 +82,7 @@ class ChiraliteServer:
         audit:        AuditLogger instance (caller owns lifecycle).
         clamd:        ClamdClient for AV scanning (``None`` disables scanning).
         rate_limiter: Optional per-CN rate limiter.
+        http_port:    Port for the HTTP SSE fallback server (``None`` disables it).
     """
 
     def __init__(
@@ -90,9 +97,11 @@ class ChiraliteServer:
         audit: AuditLogger,
         clamd: ClamdClient | None = None,
         rate_limiter: RateLimiter | None = None,
+        http_port: int | None = None,
     ) -> None:
         self._host = host
         self._port = port
+        self._http_port = http_port
         self._trust_store = trust_store
         self._silo_policy = silo_policy
         self._silo_roots = silo_roots
@@ -102,24 +111,40 @@ class ChiraliteServer:
         self._rate_limiter = rate_limiter
         self._registry = SiloRegistry()
         self._ws_server: WebSocketServer | None = None
+        self._http_runner: "web.AppRunner | None" = None  # type: ignore[name-defined]
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        """Start listening for WebSocket connections."""
+        """Start listening for WebSocket and, optionally, HTTP SSE connections."""
         self._ws_server = WebSocketServer(
-            self._host, self._port, self._handle_connection
+            self._host, self._port, self._handle_ws_connection
         )
         await self._ws_server.serve()
-        log.info("ChiraliteServer listening on %s:%d", self._host, self._port)
+        log.info("ChiraliteServer (WebSocket) listening on %s:%d", self._host, self._port)
+
+        if self._http_port is not None:
+            from aiohttp import web
+            app = build_http_app(self._handle_http_connection)
+            self._http_runner = web.AppRunner(app)
+            await self._http_runner.setup()
+            site = web.TCPSite(self._http_runner, self._host, self._http_port)
+            await site.start()
+            log.info(
+                "ChiraliteServer (HTTP SSE) listening on %s:%d",
+                self._host, self._http_port,
+            )
 
     async def stop(self) -> None:
-        """Stop accepting new connections and close the server socket."""
+        """Stop accepting new connections and close all server sockets."""
         if self._ws_server is not None:
             await self._ws_server.close()
-            log.info("ChiraliteServer stopped")
+        if self._http_runner is not None:
+            await self._http_runner.cleanup()
+            self._http_runner = None
+        log.info("ChiraliteServer stopped")
 
     @property
     def port(self) -> int:
@@ -132,7 +157,13 @@ class ChiraliteServer:
     # Connection handler
     # ------------------------------------------------------------------
 
-    async def _handle_connection(self, conn: Connection) -> None:
+    async def _handle_ws_connection(self, conn: Connection) -> None:
+        await self._handle_connection(conn)
+
+    async def _handle_http_connection(self, conn: IConnection) -> None:
+        await self._handle_connection(conn)
+
+    async def _handle_connection(self, conn: IConnection) -> None:
         framed = FramedConnection(conn)
         session: SiloSession | None = None
         try:
@@ -140,7 +171,7 @@ class ChiraliteServer:
             if session is None:
                 return
             await self._serve_session(framed, session)
-        except (ConnectionLost, asyncio.IncompleteReadError):
+        except (ConnectionLost, asyncio.IncompleteReadError, ConnectionError):
             log.debug("client disconnected from %s", conn.remote_addr)
         except Exception:
             log.exception("unhandled error from %s", conn.remote_addr)

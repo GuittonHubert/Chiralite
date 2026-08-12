@@ -36,6 +36,8 @@ from chiralite.sync.index import (
 )
 from chiralite.sync.reconciler import client_request_sync
 from chiralite.sync.watcher import SiloWatcher
+from chiralite.transport import IConnection
+from chiralite.transport.http_sse import ConnectionLostHttp, HttpSseClientConn
 from chiralite.transport.websocket import ConnectionLost, WebSocketClient
 from chiralite.trust.store import TrustStore
 
@@ -68,6 +70,12 @@ class SiloClientConfig:
 _PrivKey = ed25519.Ed25519PrivateKey | ec.EllipticCurvePrivateKey
 
 
+def _is_upgrade_refusal(exc: ConnectionLost) -> bool:
+    """Return True when the exception looks like a proxy WebSocket upgrade refusal."""
+    msg = str(exc).lower()
+    return any(k in msg for k in ("403", "407", "invalid status code", "upgrade"))
+
+
 class ChiraliteClient:
     """Manages one or more silo connections to the chiralite server.
 
@@ -78,6 +86,9 @@ class ChiraliteClient:
         trust_store:  CA used to verify the server certificate.
         silos:        List of silo configurations to manage.
         audit:        AuditLogger (caller owns lifecycle).
+        http_base_url: Base HTTPS URL for HTTP SSE fallback transport
+                       (e.g. ``"https://host:443"``).  If omitted, the fallback
+                       is disabled and WebSocket failures propagate normally.
     """
 
     def __init__(
@@ -89,14 +100,18 @@ class ChiraliteClient:
         trust_store: TrustStore,
         silos: list[SiloClientConfig],
         audit: AuditLogger,
+        http_base_url: str | None = None,
     ) -> None:
         self._url = server_url
+        self._http_base_url = http_base_url
         self._client_cert = client_cert
         self._client_key = client_key
         self._trust_store = trust_store
         self._silos = silos
         self._audit = audit
         self._stop_event = asyncio.Event()
+        # Sticky flag: once WS upgrade is refused, stay on HTTP for all reconnects
+        self._http_mode = False
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -128,7 +143,7 @@ class ChiraliteClient:
                 await self._run_silo_once(cfg)
             except asyncio.CancelledError:
                 break
-            except (HandshakeError, ConnectionLost, OSError) as exc:
+            except (HandshakeError, ConnectionLost, ConnectionLostHttp, OSError) as exc:
                 log.warning(
                     "silo %s disconnected: %s — reconnecting in 5s", cfg.silo_id, exc
                 )
@@ -139,10 +154,30 @@ class ChiraliteClient:
                 except asyncio.TimeoutError:
                     pass
 
+    async def _connect_transport(self) -> IConnection:
+        """Return a live IConnection, using HTTP SSE fallback if WS is refused."""
+        if self._http_mode:
+            return await self._connect_http()
+        try:
+            return await WebSocketClient(self._url).connect_with_retry()
+        except ConnectionLost as exc:
+            if self._http_base_url and _is_upgrade_refusal(exc):
+                log.warning(
+                    "WebSocket upgrade refused (%s) — switching to HTTP SSE+REST", exc
+                )
+                self._http_mode = True
+                return await self._connect_http()
+            raise
+
+    async def _connect_http(self) -> IConnection:
+        if not self._http_base_url:
+            raise ConnectionLost("HTTP SSE fallback not configured")
+        conn, _pipe = await HttpSseClientConn.from_handshake(self._http_base_url)
+        return conn
+
     async def _run_silo_once(self, cfg: SiloClientConfig) -> None:
         """One connect-sync-watch cycle for *cfg*."""
-        ws_client = WebSocketClient(self._url)
-        conn = await ws_client.connect_with_retry()
+        conn = await self._connect_transport()
         framed = FramedConnection(conn)
 
         result = await perform_client_handshake(
