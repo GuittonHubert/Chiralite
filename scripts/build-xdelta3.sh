@@ -73,6 +73,18 @@ if [[ -f "$XDELTA_C" ]]; then
     fi
 fi
 
+# Patch: PR #14 Python 3.10 fix. _xdelta3.c uses the 'y#' format code in
+# PyArg_ParseTuple, which requires PY_SSIZE_T_CLEAN to be defined before
+# Python.h is included on Python 3.10+; otherwise every call raises
+# "SystemError: PY_SSIZE_T_CLEAN macro must be defined for '#' formats".
+BINDING_C="$BUILD_DIR/xdelta3/_xdelta3.c"
+if [[ -f "$BINDING_C" ]]; then
+    if ! grep -q "#define PY_SSIZE_T_CLEAN" "$BINDING_C"; then
+        sed -i.bak '1s|^|#define PY_SSIZE_T_CLEAN\n|' "$BINDING_C"
+        log "  added #define PY_SSIZE_T_CLEAN"
+    fi
+fi
+
 log "Building and installing xdelta3"
 CFLAGS="${CFLAGS:+$CFLAGS }-std=gnu11" $PIP install --no-build-isolation "$BUILD_DIR"
 
